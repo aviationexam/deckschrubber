@@ -16,7 +16,7 @@ go build -v ./...
 
 Match this locally before pushing. There is no Makefile, no linter config, no formatter config beyond `gofmt`/`go vet` defaults.
 
-Go version is pinned via `go.mod` (`go 1.24.0`) and CI uses `go-version-file: go.mod` with `check-latest: true` — do not downgrade the directive without coordinating with CI.
+Go version is pinned via `go.mod` (`go 1.26.0`) and CI uses `go-version-file: go.mod` with `check-latest: true` — do not downgrade the directive without coordinating with CI.
 
 ## Running the tool
 
