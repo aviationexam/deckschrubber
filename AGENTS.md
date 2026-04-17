@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Small single-binary Go CLI that garbage-collects images from a Docker Distribution registry. Three files do the work: `main.go`, `types.go`, `util/basicauthtransport.go`. End-to-end tests live under `integration/` and exercise the built binary against an in-memory OCI v2 registry.
+Small single-binary Go CLI that garbage-collects images from a Docker Distribution registry. Two files do the work: `main.go`, `types.go`. End-to-end tests live under `integration/` and exercise the built binary against an in-memory OCI v2 registry.
 
 ## Commands
 
@@ -31,7 +31,7 @@ Version string is hardcoded in `main.go` (`const version = "0.10.0"`). Bump it t
 
 Flow per invocation:
 
-1. Build an `http.Transport` with optional basic auth via `util.BasicAuthTransport` (also handles `-insecure` TLS and `http.ProxyFromEnvironment`). Basic auth is only applied when the request URL starts with the configured registry URL. The transport is plugged into go-containerregistry via `remote.WithTransport(...)` paired with `remote.WithAuth(authn.Anonymous)` so go-containerregistry does not layer its own auth on top.
+1. Build a plain `http.Transport` (`http.ProxyFromEnvironment` + `tls.Config{InsecureSkipVerify: *insecure}`) and an `authn.Authenticator` (`authn.Anonymous` by default, `&authn.Basic{Username, Password}` when `-user`/`-password` are set). Plug both into go-containerregistry via `remote.WithTransport(...)` + `remote.WithAuth(...)`. go-containerregistry's own `basicTransport` (pkg/v1/remote/transport/basic.go) host-gates the `Authorization` header against the registry host, so credentials never leak to auth-token redirects.
 2. List repositories via `remote.CatalogPage(registry, last, windowSize, opts...)`. `-paginate` controls the loop: without it, one fetch of `-repos` size; with it, pages of `-page-size` until the server returns a short page or `len(entries) >= -repos`.
 3. For each repo matching `-repo` regex, use `remote.List(repoRef, opts...)` for tag names, then per tag `remote.Get(repoRef.Tag(tag), opts...)` for the descriptor and `desc.Image().ConfigFile()` for the `Created` timestamp. `ConfigFile()` reads both Docker schema2 and OCI image configs. If `desc.MediaType.IsIndex()` is true the tag is a multi-arch manifest list and the whole repo is skipped (no single `Created` timestamp exists). Any error on any tag skips the whole repo — this is intentional to avoid deleting live images on partial data. Do not "fix" this by continuing on error.
 4. Sort tags oldest-first (`ImageByDate` in `types.go`) and walk newest→oldest. `-latest N` preserves the N most-recent matching tags. `-day/-month/-year` combine into a single deadline via `time.Now().AddDate(-year, -month, -day)`.
@@ -49,7 +49,7 @@ Flow per invocation:
 - `-user` without `-password` prompts on stdin via `golang.org/x/term` — keep this interactive path working (no hard requirement on a TTY unless user opted in).
 - Flags are package-level pointers initialized in `init()`. Adding a flag means: declare pointer in the `var (...)` block, register it in `init()`, document it in `README.md`'s Arguments list.
 - Registry HTTP API client is `github.com/google/go-containerregistry` (`pkg/name`, `pkg/v1/remote`, `pkg/authn`). The older `github.com/docker/distribution` client is intentionally NOT a dependency — it was removed from distribution/distribution v3.0.0's public API (distribution/distribution#4126) and the ecosystem standardised on go-containerregistry (crane, ko, cosign, Harbor).
-- `util.BasicAuthTransport` is kept instead of switching to `authn.Basic{}` because it URL-prefix-gates credentials (only injects them on requests to the configured `-registry` URL). Its contract is pinned by `integration/basicauth_test.go`.
+- Basic auth goes through `authn.Basic` passed to `remote.WithAuth`. go-containerregistry's internal `basicTransport` sets `Authorization: Basic ...` only when `req.Host == registry.Host`, so the same safety property a bespoke URL-gating transport would give us is provided by the library. Pinned by `integration/basicauth_test.go` (correct creds succeed, wrong password → 401, no creds → 401).
 - `-registry` URLs with a path component (e.g. `https://example.com/docker`) are rejected in `parseRegistryHost` at start-up. `go-containerregistry`'s `name.NewRegistry` only accepts an RFC 3986 authority and every `remote.*` call hardcodes `/v2/` at the host root, so there is no way to honour a path prefix without either a workaround transport (explicitly decided against — too messy for what is essentially an upstream constraint) or changes in `go-containerregistry` itself. Rejection is pinned by `integration/registry_url_test.go`.
 - Dependabot (`.github/dependabot.yml`) handles gomod + github-actions weekly; prefer letting it bump versions rather than manual upgrades.
 

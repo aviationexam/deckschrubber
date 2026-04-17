@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"regexp"
@@ -13,7 +15,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/aviationexam/deckschrubber/util"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
@@ -164,14 +165,14 @@ func main() {
 		log.Fatalf("Could not parse registry URL! (err: %v)", err)
 	}
 
-	// We keep util.BasicAuthTransport instead of switching to authn.Basic{}
-	// because it URL-prefix-gates credentials (only injects them on requests
-	// to the configured -registry URL) and folds in -insecure TLS +
-	// http.ProxyFromEnvironment. authn.Basic would attach credentials to
-	// every request including token-exchange redirects, which is not the
-	// current contract. The integration test integration/basicauth_test.go
-	// pins this behaviour.
-	transport := util.NewBasicAuthTransport(*registryURL, *uname, *passwd, *insecure)
+	transport := &http.Transport{
+		Proxy:           http.ProxyFromEnvironment,
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: *insecure},
+	}
+	var auth authn.Authenticator = authn.Anonymous
+	if *uname != "" || *passwd != "" {
+		auth = &authn.Basic{Username: *uname, Password: *passwd}
+	}
 
 	registry, err := name.NewRegistry(host, nameOpts...)
 	if err != nil {
@@ -180,13 +181,10 @@ func main() {
 
 	ctx := context.Background()
 
-	// remoteOpts is the shared option set passed to every remote.* call.
-	// authn.Anonymous tells go-containerregistry not to layer its own
-	// auth on top; our transport is the sole source of credentials.
 	remoteOpts := []remote.Option{
 		remote.WithContext(ctx),
 		remote.WithTransport(transport),
-		remote.WithAuth(authn.Anonymous),
+		remote.WithAuth(auth),
 	}
 
 	// List of all repositories fetched from the registry. The number

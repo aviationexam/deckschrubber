@@ -104,12 +104,12 @@ func runDeckschrubberWithFlags(t *testing.T, expectSuccess bool, flags ...string
 	return output
 }
 
-// TestBasicAuthCorrectCredentials proves util.BasicAuthTransport injects
-// credentials on requests to the configured -registry URL and that
-// remote.WithTransport wires the transport through go-containerregistry's
-// remote.* calls. The registry is wrapped in a middleware that 401s any
-// request without the exact (user, pass) tuple, so a successful catalog
-// fetch is only possible if basic auth actually made it on the wire.
+// TestBasicAuthCorrectCredentials proves -user/-password are plumbed into
+// authn.Basic and reach the registry on the wire. The registry is wrapped
+// in a middleware that 401s any request without the exact (user, pass)
+// tuple, so a successful catalog fetch is only possible if basic auth
+// actually made it on the wire via go-containerregistry's built-in auth
+// path.
 func TestBasicAuthCorrectCredentials(t *testing.T) {
 	r := startAuthRegistry(t, "testuser", "testpw")
 	r.pushEmpty(t, "app/svc", "v1")
