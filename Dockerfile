@@ -19,7 +19,7 @@
 # dependabot/dependabot-core#4597, #4837 - closed unmerged). Keeping
 # the tags inline ensures Dependabot can actually bump them.
 
-FROM golang:1.25-alpine3.23 AS build
+FROM golang:1.26-alpine3.23 AS build
 
 # Override at build time to pin a specific release, e.g.
 #   docker build --build-arg DECKSCHRUBBER_VERSION=v0.9.0 .
