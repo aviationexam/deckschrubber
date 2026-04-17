@@ -1,4 +1,12 @@
 # CHANGELOG
+* `0.9.0` (aviationexam fork):
+  * Safe untag for shared digests via two-phase deletion: tags sharing a manifest with a preserved tag are now retagged to a disposable digest before deletion, avoiding accidental removal of still-tagged images ([#2](https://github.com/aviationexam/deckschrubber/pull/2))
+  * Fix pagination panic: pass allocated buffer to `Repositories()` instead of an empty slice
+  * Rename module to `github.com/aviationexam/deckschrubber` ([#12](https://github.com/aviationexam/deckschrubber/pull/12))
+  * Drop deprecated `docker/distribution/context` in favor of the stdlib `context`
+  * Add CI build workflow, Dependabot, and auto-format workflow ([#5](https://github.com/aviationexam/deckschrubber/pull/5))
+  * Add repo-specific agent guidance (`AGENTS.md`) ([#4](https://github.com/aviationexam/deckschrubber/pull/4))
+  * Bump Go toolchain and dependencies (logrus, golang.org/x/term, prometheus/common, prometheus/procfs, yaml/v2, GitHub Actions)
 * `0.8.0`:
   * Update dependencies
   * Add pagination (thanks to [@aoresnik](https://github.com/aoresnik))
