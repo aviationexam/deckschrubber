@@ -1,0 +1,55 @@
+name: Format
+
+on:
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, reopened]
+
+# Auto-fix commits are pushed back to the PR branch, which requires write
+# access to repository contents. Scoped per-job below as well.
+permissions:
+  contents: read
+
+jobs:
+  gofmt:
+    name: gofmt + goimports (auto-fix)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          # Check out the PR head branch (not the merge ref) so auto-commits
+          # can be pushed back to the contributor's branch.
+          ref: ${{ github.event.pull_request.head.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          # stefanzweifel/git-auto-commit-action needs a writable token to
+          # push back. The default GITHUB_TOKEN is fine for same-repo PRs
+          # with `contents: write`; forked PRs are read-only by design and
+          # the auto-commit step will no-op harmlessly.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+
+      - name: Install goimports
+        run: go install golang.org/x/tools/cmd/goimports@latest
+
+      - name: Run gofmt -s -w
+        run: gofmt -s -w .
+
+      - name: Run goimports -w
+        run: "$(go env GOPATH)/bin/goimports -w ."
+
+      - name: Auto-commit formatting fixes
+        uses: stefanzweifel/git-auto-commit-action@v6
+        with:
+          commit_message: "style: auto-format with gofmt + goimports"
+          file_pattern: "*.go"
+          commit_user_name: github-actions[bot]
+          commit_user_email: 41898282+github-actions[bot]@users.noreply.github.com
