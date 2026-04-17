@@ -30,6 +30,17 @@ ENV CGO_ENABLED=0 \
     GOFLAGS=-trimpath \
     GOBIN=/out
 
+# `go install` falls back to direct VCS (git ls-remote + git clone) when
+# proxy.golang.org returns a cache miss for the requested version. Fresh
+# tags typically hit this path for the first few minutes after `git push
+# origin <tag>` because the proxy indexes lazily, so every Release
+# workflow run that fires immediately after tagging races the proxy.
+# Without `git` on PATH the fallback aborts with "exec: \"git\": executable
+# file not found in $PATH" (bit v0.9.1 and v0.10.1). Installing git in the
+# builder stage makes the direct-VCS fallback actually work so the Release
+# workflow is independent of proxy indexing latency.
+RUN apk add --no-cache git
+
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     go install "${DECKSCHRUBBER_MODULE}@${DECKSCHRUBBER_VERSION}"
