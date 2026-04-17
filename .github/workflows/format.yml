@@ -50,6 +50,11 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v7
         with:
           commit_message: "style: auto-format with gofmt + goimports"
+          # `disable_globbing: true` makes git (not the shell) interpret
+          # `*.go` as a pathspec, whose `*` crosses `/` — so this single
+          # term covers root and all subdirectories. Do not add `**/*.go`:
+          # git add fails the step if any pathspec matches zero files.
+          disable_globbing: true
           file_pattern: "*.go"
           commit_user_name: github-actions[bot]
           commit_user_email: 41898282+github-actions[bot]@users.noreply.github.com
