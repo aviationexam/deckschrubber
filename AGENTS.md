@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Small single-binary Go CLI that garbage-collects images from a Docker Distribution registry. Three files do the work: `main.go`, `types.go`, `util/basicauthtransport.go`. No tests.
+Small single-binary Go CLI that garbage-collects images from a Docker Distribution registry. Three files do the work: `main.go`, `types.go`, `util/basicauthtransport.go`. End-to-end tests live under `integration/` and exercise the built binary against an in-memory OCI v2 registry.
 
 ## Commands
 
@@ -25,22 +25,22 @@ go run .            # prints usage (no args = usage, not an error)
 go run . -dry -registry http://localhost:5000 -repos 30
 ```
 
-Version string is hardcoded in `main.go` (`const version = "0.9.3"`). Bump it there and update `CHANGELOG.md` when releasing. See the "Release workflow" section below for the full cut-release procedure.
+Version string is hardcoded in `main.go` (`const version = "0.10.0"`). Bump it there and update `CHANGELOG.md` when releasing. See the "Release workflow" section below for the full cut-release procedure.
 
 ## Architecture (read before editing `main.go`)
 
 Flow per invocation:
 
-1. Build an `http.Transport` with optional basic auth via `util.BasicAuthTransport` (also handles `-insecure` TLS and `http.ProxyFromEnvironment`). Basic auth is only applied when the request URL starts with the configured registry URL.
-2. List repositories via `client.NewRegistry(...).Repositories(ctx, buf, last)`. `-paginate` controls the loop: without it, one fetch of `-repos` size; with it, pages of `-page-size` until `io.EOF` or `len(entries) >= -repos`.
-3. For each repo matching `-repo` regex, fetch every tag, its manifest, and the config blob (`schema2.DeserializedManifest` → `BlobInfo.Created`). Any error on any tag skips the whole repo — this is intentional to avoid deleting live images on partial data. Do not "fix" this by continuing on error.
+1. Build an `http.Transport` with optional basic auth via `util.BasicAuthTransport` (also handles `-insecure` TLS and `http.ProxyFromEnvironment`). Basic auth is only applied when the request URL starts with the configured registry URL. The transport is plugged into go-containerregistry via `remote.WithTransport(...)` paired with `remote.WithAuth(authn.Anonymous)` so go-containerregistry does not layer its own auth on top.
+2. List repositories via `remote.CatalogPage(registry, last, windowSize, opts...)`. `-paginate` controls the loop: without it, one fetch of `-repos` size; with it, pages of `-page-size` until the server returns a short page or `len(entries) >= -repos`.
+3. For each repo matching `-repo` regex, use `remote.List(repoRef, opts...)` for tag names, then per tag `remote.Get(repoRef.Tag(tag), opts...)` for the descriptor and `desc.Image().ConfigFile()` for the `Created` timestamp. `ConfigFile()` reads both Docker schema2 and OCI image configs. If `desc.MediaType.IsIndex()` is true the tag is a multi-arch manifest list and the whole repo is skipped (no single `Created` timestamp exists). Any error on any tag skips the whole repo — this is intentional to avoid deleting live images on partial data. Do not "fix" this by continuing on error.
 4. Sort tags oldest-first (`ImageByDate` in `types.go`) and walk newest→oldest. `-latest N` preserves the N most-recent matching tags. `-day/-month/-year` combine into a single deadline via `time.Now().AddDate(-year, -month, -day)`.
 5. Deletion is two-phase and non-obvious:
-   - **Phase 1 (shared digests):** Docker Distribution has no `Untag`. If a deletable tag shares its digest with a non-deletable tag, the code retags the deletable tag to a *different* deletable tag's digest (the "replacement digest" pulled from `replacementDigests`), then deletes that replacement digest. This effectively removes the outdated tag without destroying the image the preserved tag points to. If no disposable replacement is available, the tag is skipped with a log.
-   - **Phase 2 (non-shared digests):** plain `manifestService.Delete(ctx, digest)`.
+   - **Phase 1 (shared digests):** Docker Distribution has no `Untag`. If a deletable tag shares its digest with a non-deletable tag, the code retags the deletable tag to a *different* deletable tag's digest (the "replacement digest" pulled from `replacementDigests`), then deletes that replacement digest. Retagging uses `desc, _ := remote.Get(srcDigestRef, opts...)` + `remote.Tag(dstTagRef, desc, opts...)` — the descriptor is `remote.Taggable`, so `remote.Tag` writes its manifest bytes under the new tag name without re-uploading blobs. This effectively removes the outdated tag without destroying the image the preserved tag points to. If no disposable replacement is available, the tag is skipped with a log.
+   - **Phase 2 (non-shared digests):** plain `remote.Delete(repoRef.Digest(digest), opts...)`.
 
    When changing deletion logic, preserve both phases and the `digestsDeleted`/`replacementDigests` bookkeeping — getting this wrong deletes images that are still tagged.
-6. `-dry` short-circuits the `Tag`/`Delete` calls but still runs all the analysis and logging.
+6. `-dry` short-circuits the `remote.Tag`/`remote.Delete` calls but still runs all the analysis and logging.
 
 ## Conventions / gotchas
 
@@ -48,7 +48,8 @@ Flow per invocation:
 - All logging uses `sirupsen/logrus` with `log.WithField(...)`. Keep structured fields; do not switch to `fmt.Printf`.
 - `-user` without `-password` prompts on stdin via `golang.org/x/term` — keep this interactive path working (no hard requirement on a TTY unless user opted in).
 - Flags are package-level pointers initialized in `init()`. Adding a flag means: declare pointer in the `var (...)` block, register it in `init()`, document it in `README.md`'s Arguments list.
-- `go.mod` intentionally uses `github.com/docker/distribution v2.8.3+incompatible` and pairs it with `github.com/distribution/reference`. The two packages are split; don't "simplify" by importing only one.
+- Registry HTTP API client is `github.com/google/go-containerregistry` (`pkg/name`, `pkg/v1/remote`, `pkg/authn`). The older `github.com/docker/distribution` client is intentionally NOT a dependency — it was removed from distribution/distribution v3.0.0's public API (distribution/distribution#4126) and the ecosystem standardised on go-containerregistry (crane, ko, cosign, Harbor).
+- `util.BasicAuthTransport` is kept instead of switching to `authn.Basic{}` because it URL-prefix-gates credentials (only injects them on requests to the configured `-registry` URL). Its contract is pinned by `integration/basicauth_test.go`.
 - Dependabot (`.github/dependabot.yml`) handles gomod + github-actions weekly; prefer letting it bump versions rather than manual upgrades.
 
 ## Contributing
