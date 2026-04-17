@@ -96,6 +96,31 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4
+
+      - name: Sign image
+        # Keyless signing: the id-token:write permission lets cosign
+        # exchange GitHub's OIDC token for an ephemeral Fulcio cert.
+        # The signature and the Rekor transparency-log entry are
+        # uploaded automatically; no key material is stored anywhere.
+        #
+        # Sign by `<image>@<digest>`, not by tag. Every tag we pushed
+        # points at the same manifest (same digest), so one signing
+        # round per tag covers the whole publish. Signing by digest
+        # closes the race window where a tag could be overwritten
+        # between build and sign.
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -Eeuo pipefail
+          while IFS= read -r tag; do
+            [ -z "${tag}" ] && continue
+            image="${tag%%:*}"
+            cosign sign --yes "${image}@${DIGEST}"
+          done <<< "${TAGS}"
+
       - name: Summarise published image
         if: ${{ success() }}
         env:
