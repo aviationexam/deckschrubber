@@ -44,7 +44,10 @@ We run our own private registry on a server with limited storage and it was only
 -password string
   Password for basic authentication
 -registry string
-  URL of registry (default "http://localhost:5000")
+  URL of registry (default "http://localhost:5000"). Must be
+  scheme://host[:port]; path-prefixed URLs like
+  https://example.com/docker are rejected (see "Registry deployments
+  behind a reverse proxy" below).
 -repo string
   matching repositories (allows regexp) (default ".*")
 -repos int
@@ -60,6 +63,11 @@ We run our own private registry on a server with limited storage and it was only
 
 ## Proxy
 To access the target registry via proxy, set proxy environment variable(s) as described by Golang's [net/http package](https://pkg.go.dev/net/http#ProxyFromEnvironment).
+
+## Registry deployments behind a reverse proxy
+`-registry` must be a `scheme://host[:port]` URL without a path. Path-prefixed registry deployments (e.g. `https://example.com/docker/v2/...` behind a reverse proxy) are not supported and are rejected at start-up with a clear error.
+
+The underlying registry client library [`github.com/google/go-containerregistry`](https://github.com/google/go-containerregistry) hardcodes `/v2/` at the host root and does not expose a knob for a base path. Supporting path-prefixed registries would require changes upstream in go-containerregistry; if you need this, please open an issue there (or, in the meantime, expose your registry at the host root).
 
 ## Registry preparation
 Deckschrubber uses the Docker Registry API. 
