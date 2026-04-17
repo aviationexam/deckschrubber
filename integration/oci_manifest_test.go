@@ -79,17 +79,12 @@ func TestOCIManifestCreated(t *testing.T) {
 		"-dry",
 	)
 
-	markedOld := logLineMatches(output, "Marking tag as outdated", "old-oci")
-	markedFresh := logLineMatches(output, "Marking tag as outdated", "fresh-oci")
-	notOutdatedFresh := logLineMatches(output, "Tag not outdated", "fresh-oci")
-	notOutdatedOld := logLineMatches(output, "Tag not outdated", "old-oci")
-
-	require.True(t, markedOld,
+	require.True(t, logLineMatches(output, "Marking tag as outdated", "old-oci"),
 		"old-oci (100 days old) should be marked outdated; output:\n%s", output)
-	require.False(t, markedFresh,
+	require.False(t, logLineMatches(output, "Marking tag as outdated", "fresh-oci"),
 		"fresh-oci (5 days old) must NOT be marked outdated; output:\n%s", output)
-	require.True(t, notOutdatedFresh,
+	require.True(t, logLineMatches(output, "Tag not outdated", "fresh-oci"),
 		"fresh-oci (5 days old) should log 'Tag not outdated'; output:\n%s", output)
-	require.False(t, notOutdatedOld,
+	require.False(t, logLineMatches(output, "Tag not outdated", "old-oci"),
 		"old-oci (100 days old) must NOT log 'Tag not outdated'; output:\n%s", output)
 }
