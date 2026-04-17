@@ -61,7 +61,7 @@ func TestSharedDigestRetagAndDelete(t *testing.T) {
 	)
 
 	require.Contains(t, output, "Digest is shared with non-deletable tags",
-		"expected Phase 1 (shared digest) log line; got output:\n%s", output)
+		"expected Phase 1 (shared digest) log line")
 
 	r.requireTagExists(t, repo, "keep-shared")
 	r.requireDigestPullable(t, repo, sharedDigest)
@@ -93,7 +93,7 @@ func TestSharedDigestNoReplacementAvailable(t *testing.T) {
 
 	require.Contains(t, output,
 		"no disposable replacement digest is available",
-		"expected Phase 1 safety-skip log; got output:\n%s", output)
+		"expected Phase 1 safety-skip log")
 
 	r.requireTagExists(t, repo, "keep-shared")
 	r.requireTagExists(t, repo, "old-shared")
