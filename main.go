@@ -2,10 +2,10 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"regexp"
 	"sort"
@@ -14,10 +14,9 @@ import (
 	"time"
 
 	"github.com/aviationexam/deckschrubber/util"
-	"github.com/distribution/reference"
-	"github.com/docker/distribution"
-	schema2 "github.com/docker/distribution/manifest/schema2"
-	"github.com/docker/distribution/registry/client"
+	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/term"
 )
@@ -92,6 +91,26 @@ func init() {
 	pageSize = flag.Int("page-size", 100, "Number of entries to fetch upon each request (default = 100)")
 }
 
+// parseRegistryHost extracts the host[:port] portion from a -registry URL
+// (e.g. http://localhost:5000) and returns it alongside the name.Option set
+// for constructing references: name.Insecure when the scheme is http so
+// go-containerregistry talks plain HTTP, and name.StrictValidation so we
+// fail loudly on malformed repo names rather than silently normalising them.
+func parseRegistryHost(registryURL string) (string, []name.Option, error) {
+	u, err := url.Parse(registryURL)
+	if err != nil {
+		return "", nil, fmt.Errorf("parse registry URL %q: %w", registryURL, err)
+	}
+	if u.Host == "" {
+		return "", nil, fmt.Errorf("registry URL %q has no host", registryURL)
+	}
+	opts := []name.Option{name.StrictValidation}
+	if u.Scheme == "http" {
+		opts = append(opts, name.Insecure)
+	}
+	return u.Host, opts, nil
+}
+
 func main() {
 	flag.Parse()
 
@@ -128,19 +147,38 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	// We keep util.BasicAuthTransport instead of switching to authn.Basic{}
+	// because it URL-prefix-gates credentials (only injects them on requests
+	// to the configured -registry URL) and folds in -insecure TLS +
+	// http.ProxyFromEnvironment. authn.Basic would attach credentials to
+	// every request including token-exchange redirects, which is not the
+	// current contract. The integration test integration/basicauth_test.go
+	// pins this behaviour.
 	basicAuthTransport := util.NewBasicAuthTransport(*registryURL, *uname, *passwd, *insecure)
 
-	// Create registry object
-	r, err := client.NewRegistry(*registryURL, basicAuthTransport)
+	host, nameOpts, err := parseRegistryHost(*registryURL)
 	if err != nil {
-		log.Fatalf("Could not create registry object! (err: %s", err)
+		log.Fatalf("Could not parse registry URL! (err: %v)", err)
+	}
+	registry, err := name.NewRegistry(host, nameOpts...)
+	if err != nil {
+		log.Fatalf("Could not create registry object! (err: %v)", err)
 	}
 
 	ctx := context.Background()
 
+	// remoteOpts is the shared option set passed to every remote.* call.
+	// authn.Anonymous tells go-containerregistry not to layer its own
+	// auth on top; our transport is the sole source of credentials.
+	remoteOpts := []remote.Option{
+		remote.WithContext(ctx),
+		remote.WithTransport(basicAuthTransport),
+		remote.WithAuth(authn.Anonymous),
+	}
+
 	// List of all repositories fetched from the registry. The number
 	// of fetched repositories depends on the number provided by the
-	// user ('-repos' flag) and pagination settings
+	// user ('-repos' flag) and pagination settings.
 	windowSize := *repoCount
 	if *paginate {
 		if *repoCount > *pageSize {
@@ -152,29 +190,27 @@ func main() {
 	var entries []string
 	// Empty string denotes that the query is being made for the first
 	// time, so the server starts with the first set of repositories
-	// (sorted lexigraphically)
+	// (sorted lexigraphically).
 	var last string
 	for {
-		// The size of 'es' determines the number of repositories
-		// that are being queried by us
-		es := make([]string, windowSize)
-		n, err := r.Repositories(ctx, es, last)
+		page, err := remote.CatalogPage(registry, last, windowSize, remoteOpts...)
 		if err != nil && err != io.EOF {
 			log.Fatalf("Error while fetching repositories! (err: %v)", err)
 		}
 
-		log.WithFields(log.Fields{"count": n, "entries": es[:n]}).Info("Successfully fetched repositories.")
-		entries = append(entries, es[:n]...)
+		log.WithFields(log.Fields{"count": len(page), "entries": page}).Info("Successfully fetched repositories.")
+		entries = append(entries, page...)
 
 		// Stop the query if:
-		// - there are no more records to fetch
+		// - the server returned fewer than a full page (implies end of catalog)
 		// - we already have more than requested entries
-		if err == io.EOF || len(entries) >= *repoCount {
+		// - an io.EOF was signalled
+		if err == io.EOF || len(page) < windowSize || len(entries) >= *repoCount {
 			break
 		}
 
-		// Set last for the next page
-		last = entries[n-1]
+		// Advance the cursor to the last repo we saw.
+		last = page[len(page)-1]
 	}
 
 	// Deadline defines the youngest creation date for an image
@@ -192,27 +228,13 @@ func main() {
 			continue
 		}
 
-		// Establish repository object in registry
-		repoName, err := reference.WithName(entry)
-
-		if err != nil {
-			logger.Fatalf("Could not parse repo from name! (err: %v)", err)
-		}
-
-		repo, err := client.NewRepository(repoName, *registryURL, basicAuthTransport)
+		repoRef, err := name.NewRepository(fmt.Sprintf("%s/%s", host, entry), nameOpts...)
 		if err != nil {
 			logger.WithFields(log.Fields{"entry": entry}).Fatalf("Could not create repo from name! (err: %v)", err)
 		}
 		logger.Debug("Successfully created repository object.")
 
-		tagsService := repo.Tags(ctx)
-		blobsService := repo.Blobs(ctx)
-		manifestService, err := repo.Manifests(ctx)
-		if err != nil {
-			logger.Fatalf("Couldn't fetch manifest service! (err: %v)", err)
-		}
-
-		tagsData, err := tagsService.All(ctx)
+		tagsData, err := remote.List(repoRef, remoteOpts...)
 		if err != nil {
 			logger.Fatalf("Couldn't fetch tags! (err: %v)", err)
 		}
@@ -220,51 +242,49 @@ func main() {
 		var tags []Image
 
 		// Fetch information about each tag of a repository
-		// This involves fetching the manifest, its details,
-		// and the corresponding blob information
+		// This involves fetching the descriptor (resolves tag -> digest)
+		// and the image config blob so we can read its Created timestamp.
 		tagFetchDataErrors := false
 		for _, tag := range tagsData {
 			tagLogger := logger.WithField("tag", tag)
 
-			tagLogger.Debug("Fetching tag...")
-			desc, err := tagsService.Get(ctx, tag)
+			tagLogger.Debug("Fetching tag descriptor...")
+			tagRef := repoRef.Tag(tag)
+			desc, err := remote.Get(tagRef, remoteOpts...)
 			if err != nil {
-				tagLogger.Error("Could not fetch tag!")
+				tagLogger.WithField("err", err).Error("Could not fetch tag!")
 				tagFetchDataErrors = true
 				break
 			}
 
-			tagLogger.Debug("Fetching manifest...")
-			mnfst, err := manifestService.Get(ctx, desc.Digest)
-			if err != nil {
-				tagLogger.Error("Could not fetch manifest!")
+			// Multi-arch manifest lists don't have a single Created
+			// timestamp; skip the whole repo the same way we skip on
+			// any other per-tag data error, so we never act on partial
+			// information. This matches the pre-migration behaviour
+			// where schema2 deserialization of a manifest list would
+			// leave Created zero and every tag would look "outdated".
+			if desc.MediaType.IsIndex() {
+				tagLogger.WithField("mediaType", string(desc.MediaType)).Error("Tag refers to a manifest list (multi-arch); deckschrubber cannot compute a single Created timestamp for it - skipping repo to avoid acting on partial data")
 				tagFetchDataErrors = true
 				break
 			}
 
-			tagLogger.Debug("Parsing manifest details...")
-			_, p, err := mnfst.Payload()
+			tagLogger.Debug("Fetching image config...")
+			img, err := desc.Image()
 			if err != nil {
-				tagLogger.Error("Could not parse manifest detail!")
+				tagLogger.WithField("err", err).Error("Could not resolve manifest to image!")
 				tagFetchDataErrors = true
 				break
 			}
 
-			m := new(schema2.DeserializedManifest)
-			m.UnmarshalJSON(p)
-
-			tagLogger.Debug("Fetching blob")
-			b, err := blobsService.Get(ctx, m.Manifest.Config.Digest)
+			cfg, err := img.ConfigFile()
 			if err != nil {
-				tagLogger.Error("Could not fetch blob!")
+				tagLogger.WithField("err", err).Error("Could not fetch image config!")
 				tagFetchDataErrors = true
 				break
 			}
 
-			var blobInfo BlobInfo
-			json.Unmarshal(b, &blobInfo)
-
-			tags = append(tags, Image{entry, tag, blobInfo.Created, desc})
+			tags = append(tags, Image{entry, tag, cfg.Created.Time, desc.Digest})
 		}
 
 		if tagFetchDataErrors {
@@ -347,7 +367,7 @@ func main() {
 		// delete that disposable digest.
 		nonDeletableDigests := make(map[string]string)
 		for _, tag := range nonDeletableTags {
-			digest := tag.Descriptor.Digest.String()
+			digest := tag.Digest.String()
 			if existingTags, exists := nonDeletableDigests[digest]; !exists {
 				nonDeletableDigests[digest] = tag.Tag
 			} else {
@@ -357,7 +377,7 @@ func main() {
 
 		replacementDigests := make(map[string]Image)
 		for _, tag := range deletableTags {
-			digest := tag.Descriptor.Digest.String()
+			digest := tag.Digest.String()
 			if _, exists := nonDeletableDigests[digest]; !exists {
 				replacementDigests[digest] = tag
 			}
@@ -368,7 +388,7 @@ func main() {
 		// Phase 1: shared digests first. Retag outdated tags to disposable
 		// digests and delete those disposable digests.
 		for _, tag := range deletableTags {
-			digest := tag.Descriptor.Digest.String()
+			digest := tag.Digest.String()
 
 			if digestsDeleted[digest] {
 				logger.WithField("tag", tag.Tag).Debug("Image under tag already deleted")
@@ -381,17 +401,17 @@ func main() {
 				continue
 			}
 
-			var replacementDigest string
+			var replacementDigestStr string
 			var replacementTag Image
 			for candidateDigest, candidateTag := range replacementDigests {
 				if candidateDigest != digest {
-					replacementDigest = candidateDigest
+					replacementDigestStr = candidateDigest
 					replacementTag = candidateTag
 					break
 				}
 			}
 
-			if replacementDigest == "" {
+			if replacementDigestStr == "" {
 				logger.WithField("tag", tag.Tag).WithField("alsoUsedByTags", nonDeletableTagsForDigest).Info("The underlying image is also used by non-deletable tags and no disposable replacement digest is available - skipping deletion")
 				continue
 			}
@@ -400,43 +420,46 @@ func main() {
 				WithField("tag", tag.Tag).
 				WithField("sharedDigest", digest).
 				WithField("alsoUsedByTags", nonDeletableTagsForDigest).
-				WithField("replacementDigest", replacementTag.Descriptor.Digest.String()).
+				WithField("replacementDigest", replacementTag.Digest.String()).
 				Info("Digest is shared with non-deletable tags - retagging to disposable digest for safe untag")
 
 			if *dry {
-				logger.WithField("tag", tag.Tag).WithField("replacementDigest", replacementTag.Descriptor.Digest.String()).Infof("Not actually retagging/deleting digest (-dry=%v)", *dry)
+				logger.WithField("tag", tag.Tag).WithField("replacementDigest", replacementTag.Digest.String()).Infof("Not actually retagging/deleting digest (-dry=%v)", *dry)
 				continue
 			}
 
-			// TagService.Tag() is not implemented in docker/distribution's
-			// client library (it panics with "not implemented"), so we retag
-			// by fetching the replacement manifest and re-PUTing it under the
-			// target tag name via ManifestService.Put. This issues a
-			// PUT /v2/<repo>/manifests/<tag> with the manifest bytes, which
-			// is the wire-level operation `docker tag` + `docker push` perform.
-			replacementManifest, err := manifestService.Get(ctx, replacementTag.Descriptor.Digest)
+			// Resolve the replacement digest to a descriptor, then PUT that
+			// descriptor under the outdated tag name. remote.Tag writes the
+			// manifest bytes as-is under <tag>, so no blob re-upload
+			// happens. This mirrors `docker tag src dst && docker push dst`
+			// at the wire level and is the same sequence carvel-dev/kbld
+			// uses for its registry retag helper.
+			srcRef := repoRef.Digest(replacementTag.Digest.String())
+			srcDesc, err := remote.Get(srcRef, remoteOpts...)
 			if err != nil {
-				logger.WithField("tag", tag.Tag).WithField("replacementDigest", replacementTag.Descriptor.Digest.String()).WithField("err", err).Error("Could not fetch replacement manifest for retagging!")
+				logger.WithField("tag", tag.Tag).WithField("replacementDigest", replacementTag.Digest.String()).WithField("err", err).Error("Could not fetch replacement descriptor for retagging!")
 				continue
 			}
 
-			if _, err := manifestService.Put(ctx, replacementManifest, distribution.WithTag(tag.Tag)); err != nil {
-				logger.WithField("tag", tag.Tag).WithField("replacementDigest", replacementTag.Descriptor.Digest.String()).WithField("err", err).Error("Could not retag image to disposable digest!")
+			dstRef := repoRef.Tag(tag.Tag)
+			if err := remote.Tag(dstRef, srcDesc, remoteOpts...); err != nil {
+				logger.WithField("tag", tag.Tag).WithField("replacementDigest", replacementTag.Digest.String()).WithField("err", err).Error("Could not retag image to disposable digest!")
 				continue
 			}
 
-			if err := manifestService.Delete(ctx, replacementTag.Descriptor.Digest); err != nil {
-				logger.WithField("tag", tag.Tag).WithField("replacementDigest", replacementTag.Descriptor.Digest.String()).WithField("err", err).Error("Could not delete disposable digest after retagging!")
+			replacementDigestRef := repoRef.Digest(replacementTag.Digest.String())
+			if err := remote.Delete(replacementDigestRef, remoteOpts...); err != nil {
+				logger.WithField("tag", tag.Tag).WithField("replacementDigest", replacementTag.Digest.String()).WithField("err", err).Error("Could not delete disposable digest after retagging!")
 				continue
 			}
 
-			delete(replacementDigests, replacementDigest)
-			digestsDeleted[replacementDigest] = true
+			delete(replacementDigests, replacementDigestStr)
+			digestsDeleted[replacementDigestStr] = true
 		}
 
 		// Phase 2: non-shared digests. Delete digest directly.
 		for _, tag := range deletableTags {
-			digest := tag.Descriptor.Digest.String()
+			digest := tag.Digest.String()
 
 			if digestsDeleted[digest] {
 				logger.WithField("tag", tag.Tag).Debug("Image under tag already deleted")
@@ -455,8 +478,9 @@ func main() {
 				continue
 			}
 
-			logger.WithField("tag", tag.Tag).WithField("time", tag.Time).WithField("digest", tag.Descriptor.Digest).Infof("Deleting image (-dry=%v)", *dry)
-			err := manifestService.Delete(ctx, tag.Descriptor.Digest)
+			logger.WithField("tag", tag.Tag).WithField("time", tag.Time).WithField("digest", tag.Digest).Infof("Deleting image (-dry=%v)", *dry)
+			digestRef := repoRef.Digest(tag.Digest.String())
+			err := remote.Delete(digestRef, remoteOpts...)
 			if err != nil {
 				logger.WithField("tag", tag.Tag).WithField("err", err).Error("Could not delete image!")
 				continue

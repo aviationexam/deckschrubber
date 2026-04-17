@@ -3,20 +3,20 @@ package main
 import (
 	"time"
 
-	"github.com/docker/distribution"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 )
 
-// BlobInfo represents information about a specific Blob
-type BlobInfo struct {
-	Created time.Time `json:"created"` // Creation time
-}
-
-// Image represents a docker image with a specific tag
+// Image represents a docker image with a specific tag.
+//
+// Digest is the manifest digest the tag resolves to; we keep it as v1.Hash
+// rather than a full remote.Descriptor because the only thing the GC logic
+// needs from the descriptor is the digest (used for identity comparisons
+// between tags and for the Delete/Tag wire calls).
 type Image struct {
-	Repository string                  // Name of repository to which image belongs
-	Tag        string                  // Image's tag
-	Time       time.Time               // Creation time of the image
-	Descriptor distribution.Descriptor // Underlying image descriptor
+	Repository string    // Name of repository to which image belongs
+	Tag        string    // Image's tag
+	Time       time.Time // Creation time of the image (from the image config's `created` field)
+	Digest     v1.Hash   // Manifest digest the tag currently points at
 }
 
 // ImageByDate represents an array of images
