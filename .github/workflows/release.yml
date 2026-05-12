@@ -124,7 +124,7 @@ jobs:
         # v0.9.1's release workflow failed. Pin the full `v4.1.1` tag;
         # Dependabot (github-actions ecosystem) will bump it when
         # sigstore cuts a new version.
-        uses: sigstore/cosign-installer@v4.1.1
+        uses: sigstore/cosign-installer@v4.1.2
 
       - name: Sign image
         # Keyless signing: the id-token:write permission lets cosign
