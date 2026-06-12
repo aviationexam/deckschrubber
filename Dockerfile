@@ -45,7 +45,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     go install "${DECKSCHRUBBER_MODULE}@${DECKSCHRUBBER_VERSION}"
 
-FROM alpine:3.23
+FROM alpine:3.24
 
 # ca-certificates is required so deckschrubber can talk to HTTPS registries.
 RUN apk add --no-cache ca-certificates
