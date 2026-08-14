@@ -3,7 +3,7 @@ module github.com/aviationexam/deckschrubber
 go 1.26.0
 
 require (
-	github.com/google/go-containerregistry v0.21.8
+	github.com/google/go-containerregistry v0.21.9
 	github.com/sirupsen/logrus v1.9.4
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/term v0.45.0
